@@ -1,3 +1,4 @@
+import json
 import time
 from datetime import datetime
 from typing import List
@@ -7,9 +8,10 @@ import requests
 from backtester import MaCrossoverStrategy, Candle
 
 PAIR = "XBTEUR"
-INTERVAL_SECONDS = 60  # כמה זמן לחכות בין עדכונים
+INTERVAL_SECONDS = 30  # כמה זמן לחכות בין עדכונים (חצי דקה בשביל תחושה חיה)
 INITIAL_CASH = 1000.0
 FEE_RATE = 0.002  # 0.2% עמלה משוערת לכל טרייד
+STATE_FILE = "paper_state.json"
 
 
 def fetch_live_price(pair: str = PAIR) -> float:
@@ -28,10 +30,31 @@ def fetch_live_price(pair: str = PAIR) -> float:
     return last_trade_price
 
 
+def write_state(
+    cash: float,
+    position: float,
+    equity: float,
+    price: float,
+    trades: List[dict],
+) -> None:
+    state = {
+        "pair": PAIR,
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "cash": cash,
+        "position": position,
+        "equity": equity,
+        "price": price,
+        "trades": trades[-100:],  # נשמור רק את ה-100 האחרונים
+    }
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+
+
 def run_paper_trader():
     """בוט paper trading פשוט על נתונים חיים מקרקן.
 
     חשוב: אין כאן מסחר אמיתי, רק עדכון cash/position בזיכרון.
+    בנוסף כותב מצב לקובץ JSON בשביל הדשבורד.
     """
     cash = INITIAL_CASH
     position = 0.0  # BTC
@@ -39,16 +62,17 @@ def run_paper_trader():
     candles: List[Candle] = []
     strat = MaCrossoverStrategy(short_win=10, long_win=30, max_exposure=0.5)
 
+    # לוג טריידים פשוט בשביל הדשבורד
+    trades_log: List[dict] = []
+
     print(f"Starting paper trader for {PAIR} with €{INITIAL_CASH:.2f} cash")
     print("Press Ctrl+C to stop.\n")
 
-    # לולאה אינסופית עד שעוצרים ידנית
     while True:
         try:
             price = fetch_live_price()
             now = datetime.now()
 
-            # בונים candle מדומה על בסיס מחיר אחד (open=high=low=close)
             candle = Candle(
                 time=now,
                 open=price,
@@ -59,7 +83,6 @@ def run_paper_trader():
             )
             candles.append(candle)
 
-            # מעדכנים את הנתונים באסטרטגיה (closes + MAs)
             strat.closes = [c.close for c in candles]
             strat.ma_short = strat._ma(strat.closes, strat.short_win)
             strat.ma_long = strat._ma(strat.closes, strat.long_win)
@@ -69,16 +92,26 @@ def run_paper_trader():
             action = signal.get("action", "hold")
             frac = float(signal.get("fraction", 0.0))
 
-            # מחשבים הון נוכחי לפני פעולה
             equity_before = cash + position * price
 
             if action == "buy" and frac > 0 and cash > 0:
                 amount_eur = cash * min(frac, 1.0)
-                if amount_eur >= 10:  # מתעלמים מטריידים קטנים
+                if amount_eur >= 10:
                     qty = amount_eur / price
                     fee = amount_eur * FEE_RATE
                     cash -= (amount_eur + fee)
                     position += qty
+                    trades_log.append(
+                        {
+                            "time": now.isoformat(),
+                            "side": "buy",
+                            "price": price,
+                            "qty": qty,
+                            "fee": fee,
+                            "cash_after": cash,
+                            "position_after": position,
+                        }
+                    )
                     print(
                         f"{now} | BUY  {qty:.6f} @ {price:.2f}, "
                         f"fee={fee:.2f}, cash={cash:.2f}, pos={position:.6f}",
@@ -90,6 +123,17 @@ def run_paper_trader():
                 fee = proceeds * FEE_RATE
                 cash += (proceeds - fee)
                 position -= qty
+                trades_log.append(
+                    {
+                        "time": now.isoformat(),
+                        "side": "sell",
+                        "price": price,
+                        "qty": qty,
+                        "fee": fee,
+                        "cash_after": cash,
+                        "position_after": position,
+                    }
+                )
                 print(
                     f"{now} | SELL {qty:.6f} @ {price:.2f}, "
                     f"fee={fee:.2f}, cash={cash:.2f}, pos={position:.6f}",
@@ -103,6 +147,9 @@ def run_paper_trader():
                 )
             else:
                 print(f"    Equity before={equity_before:.2f} -> after={equity_after:.2f}")
+
+            # כתיבת מצב לדשבורד
+            write_state(cash, position, equity_after, price, trades_log)
 
             time.sleep(INTERVAL_SECONDS)
 

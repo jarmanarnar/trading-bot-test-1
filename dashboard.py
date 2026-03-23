@@ -1,10 +1,14 @@
+import json
 import math
+from pathlib import Path
 from typing import List
 
 import streamlit as st
 import pandas as pd
 
 from backtester import fetch_candles, backtest, MaCrossoverStrategy, Candle
+
+STATE_FILE = Path("paper_state.json")
 
 
 def candles_to_df(candles: List[Candle]) -> pd.DataFrame:
@@ -52,11 +56,18 @@ def compute_stats(initial: float, final: float, equity_curve, trades_df: pd.Data
     }
 
 
-def main() -> None:
-    st.set_page_config(page_title="Trading Bot Backtest", layout="wide")
-    st.title("Trading Bot Backtest – Kraken XBTEUR")
+def load_paper_state():
+    if not STATE_FILE.exists():
+        return None
+    try:
+        with STATE_FILE.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
 
-    st.sidebar.header("Parameters")
+
+def render_backtest_tab():
+    st.sidebar.header("Backtest parameters")
     short_win = st.sidebar.slider("Short MA window", min_value=3, max_value=50, value=10, step=1)
     long_win = st.sidebar.slider("Long MA window", min_value=10, max_value=200, value=30, step=1)
     fee_rate = st.sidebar.slider("Fee rate (per trade)", min_value=0.0, max_value=0.005, value=0.002, step=0.0005)
@@ -131,6 +142,53 @@ def main() -> None:
             st.info("No trades executed with these parameters.")
     else:
         st.info("Set parameters in the sidebar and click 'Run backtest'.")
+
+
+def render_paper_tab():
+    st.sidebar.header("Paper trading (live)")
+    st.sidebar.write("Run `paper_trader.py` locally to update state.")
+
+    state = load_paper_state()
+    if state is None:
+        st.info("No paper trading state found yet. Make sure paper_trader.py is running.")
+        return
+
+    cash = state.get("cash", 0.0)
+    position = state.get("position", 0.0)
+    equity = state.get("equity", 0.0)
+    price = state.get("price", 0.0)
+    pair = state.get("pair", "?")
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Pair", pair)
+    col2.metric("Price", f"€{price:,.2f}")
+    col3.metric("Cash", f"€{cash:,.2f}")
+    col4.metric("Position", f"{position:.6f} BTC")
+
+    st.metric("Equity", f"€{equity:,.2f}")
+
+    trades = state.get("trades", [])
+    if trades:
+        trades_df = pd.DataFrame(trades)
+        trades_df["time"] = pd.to_datetime(trades_df["time"])
+        trades_df = trades_df.set_index("time").sort_index()
+
+        st.subheader("Paper trades (last 50)")
+        st.dataframe(trades_df.tail(50))
+    else:
+        st.info("No trades yet.")
+
+
+def main() -> None:
+    st.set_page_config(page_title="Trading Bot Backtest & Paper Trading", layout="wide")
+    st.title("Trading Bot – Backtest & Paper Trading")
+
+    mode = st.sidebar.selectbox("Mode", ["Backtest", "Paper trading (live)"])
+
+    if mode == "Backtest":
+        render_backtest_tab()
+    else:
+        render_paper_tab()
 
 
 if __name__ == "__main__":
