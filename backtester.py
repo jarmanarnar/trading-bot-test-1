@@ -34,6 +34,8 @@ class Result:
     initial_equity: float
     final_equity: float
     trades: List[Trade]
+    equity_curve: List[float]
+    equity_times: List[datetime]
 
 
 class Strategy(Protocol):
@@ -94,10 +96,16 @@ def backtest(
     position = 0.0  # BTC
     trades: List[Trade] = []
 
+    equity_curve: List[float] = []
+    equity_times: List[datetime] = []
+
     strategy.on_init(candles)
 
     for i, c in enumerate(candles):
         if i == 0:
+            # גם את הנקודה הראשונה נכניס לעקומת ההון
+            equity_curve.append(initial_cash)
+            equity_times.append(c.time)
             continue
 
         signal = strategy.on_bar(i, c, cash, position) or {}
@@ -108,15 +116,14 @@ def backtest(
 
         if action == "buy" and frac > 0 and cash > 0:
             amount_eur = cash * min(frac, 1.0)
-            if amount_eur < 10:  # ignore tiny trades
-                continue
-            qty = amount_eur / price
-            fee = amount_eur * fee_rate
-            cash -= (amount_eur + fee)
-            position += qty
-            trades.append(
-                Trade(c.time, "buy", price, qty, cash, position)
-            )
+            if amount_eur >= 10:  # ignore tiny trades
+                qty = amount_eur / price
+                fee = amount_eur * fee_rate
+                cash -= (amount_eur + fee)
+                position += qty
+                trades.append(
+                    Trade(c.time, "buy", price, qty, cash, position)
+                )
 
         elif action == "sell" and frac > 0 and position > 0:
             qty = position * min(frac, 1.0)
@@ -128,9 +135,14 @@ def backtest(
                 Trade(c.time, "sell", price, qty, cash, position)
             )
 
+        # עדכון ההון אחרי הפעולה בנר הזה
+        equity = cash + position * price
+        equity_curve.append(equity)
+        equity_times.append(c.time)
+
     final_price = candles[-1].close
     final_equity = cash + position * final_price
-    return Result(initial_cash, final_equity, trades)
+    return Result(initial_cash, final_equity, trades, equity_curve, equity_times)
 
 
 # --- Example: MA 10/30 strategy ---

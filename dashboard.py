@@ -23,6 +23,35 @@ def candles_to_df(candles: List[Candle]) -> pd.DataFrame:
     ).set_index("time")
 
 
+def compute_stats(initial: float, final: float, equity_curve, trades_df: pd.DataFrame) -> dict:
+    total_return_pct = (final / initial - 1.0) * 100.0
+
+    # max drawdown על בסיס עקומת ההון
+    max_dd_pct = 0.0
+    if equity_curve:
+        peak = equity_curve[0]
+        max_dd = 0.0
+        for eq in equity_curve:
+            if eq > peak:
+                peak = eq
+            dd = (eq / peak) - 1.0
+            if dd < max_dd:
+                max_dd = dd
+        max_dd_pct = max_dd * 100.0
+
+    num_trades = len(trades_df) if trades_df is not None else 0
+    num_buys = int((trades_df["side"] == "buy").sum()) if num_trades else 0
+    num_sells = int((trades_df["side"] == "sell").sum()) if num_trades else 0
+
+    return {
+        "total_return_pct": total_return_pct,
+        "max_drawdown_pct": max_dd_pct,
+        "num_trades": num_trades,
+        "num_buys": num_buys,
+        "num_sells": num_sells,
+    }
+
+
 def main() -> None:
     st.set_page_config(page_title="Trading Bot Backtest", layout="wide")
     st.title("Trading Bot Backtest – Kraken XBTEUR")
@@ -48,12 +77,7 @@ def main() -> None:
 
         final_pct = (result.final_equity / result.initial_equity - 1.0) * 100.0
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Initial equity", f"€{result.initial_equity:,.2f}")
-        col2.metric("Final equity", f"€{result.final_equity:,.2f}", f"{final_pct:+.2f}%")
-        col3.metric("Number of trades", f"{len(result.trades)}")
-
-        # Trades table
+        trades_df = None
         if result.trades:
             trades_df = pd.DataFrame(
                 [
@@ -69,7 +93,25 @@ def main() -> None:
                 ]
             ).set_index("time")
 
-            st.subheader("Trades")
+        stats = compute_stats(result.initial_equity, result.final_equity, result.equity_curve, trades_df)
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Initial equity", f"€{result.initial_equity:,.2f}")
+        col2.metric("Final equity", f"€{result.final_equity:,.2f}", f"{final_pct:+.2f}%")
+        col3.metric("Max drawdown", f"{stats['max_drawdown_pct']:.2f}%")
+        col4.metric("Trades (B/S)", f"{stats['num_trades']} ({stats['num_buys']}/{stats['num_sells']})")
+
+        # Equity curve
+        if result.equity_curve:
+            st.subheader("Equity curve")
+            eq_df = pd.DataFrame(
+                {"equity": result.equity_curve}, index=result.equity_times
+            )
+            st.line_chart(eq_df)
+
+        # Trades table
+        if trades_df is not None:
+            st.subheader("Trades (last 50)")
             st.dataframe(trades_df.tail(50))
 
             # Price chart with buy/sell markers
